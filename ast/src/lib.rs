@@ -92,39 +92,39 @@ impl ExpressionAST {
                 vars.new_scope();
                 let res = body
                     .iter()
-                    .map(move |ast| ast.evaluate(&vars))
+                    .map(move |ast| ast.evaluate(vars))
                     .last()
                     .and_then(|opt| opt);
                 vars.leave_scope();
                 res
             }
             Self::Let { ident, value } => {
-                let value = value.evaluate(&vars).unwrap();
-                vars.insert_value(&ident, value);
+                let value = value.evaluate(vars).unwrap();
+                vars.insert_value(ident, value);
                 None
             }
             Self::Identifier(name) => Some(
                 vars.get_value(name)
-                    .expect(&format!("var {:?} to be known", &name)),
+                    .unwrap_or_else(|| panic!("var {:?} to be known", &name)),
             ),
             Self::Value(v) => Some(*v),
             Self::If {
                 cond,
                 true_block,
                 false_block,
-            } => match cond.evaluate(&vars) {
-                Some(v) if v > 0 => true_block.evaluate(&vars),
-                _ => false_block.evaluate(&vars),
+            } => match cond.evaluate(vars) {
+                Some(v) if v > 0 => true_block.evaluate(vars),
+                _ => false_block.evaluate(vars),
             },
             Self::BinaryOp { op, lhs, rhs } => {
-                let lhs = lhs.evaluate(&vars).unwrap();
-                let rhs = rhs.evaluate(&vars).unwrap();
+                let lhs = lhs.evaluate(vars).unwrap();
+                let rhs = rhs.evaluate(vars).unwrap();
                 Some(op.perform(lhs, rhs))
             }
             Self::FunctionCall { fn_name, arguments } => {
                 let fn_item = vars
-                    .get_fn_item(&fn_name)
-                    .expect(&format!("function {} to exist", &fn_name));
+                    .get_fn_item(fn_name)
+                    .unwrap_or_else(|| panic!("function {} to exist", &fn_name));
 
                 let values = arguments.iter().collect::<Vec<_>>();
                 assert_eq!(fn_item.fn_sig.arguments.len(), values.len());
@@ -139,9 +139,9 @@ impl ExpressionAST {
                 }
                 //call_block.with_child(&ast.children[0]);
 
-                ExpressionAST::new_scope(&body).evaluate(&vars)
+                ExpressionAST::new_scope(&body).evaluate(vars)
             }
-            Self::TypedExpression { expr, .. } => expr.evaluate(&vars),
+            Self::TypedExpression { expr, .. } => expr.evaluate(vars),
             Self::HandleExpression { .. } => {
                 todo!()
             }
@@ -163,11 +163,9 @@ impl ExpressionAST {
             } => vec![*cond, *true_block, *false_block],
             Self::Let { value, .. } => vec![*value],
             Self::BinaryOp { lhs, rhs, .. } => vec![*lhs, *rhs],
-            Self::FunctionCall { arguments, .. } => {
-                arguments.into_iter().map(|arg| *arg.clone()).collect()
-            }
+            Self::FunctionCall { arguments, .. } => arguments.into_iter().map(|arg| *arg).collect(),
             Self::HandleExpression { expr, .. } => vec![*expr],
-            Self::Scope { body } => body.into_iter().map(|ast| *ast.clone()).collect(),
+            Self::Scope { body } => body.into_iter().map(|ast| *ast).collect(),
             Self::TypedExpression { expr, .. } => vec![*expr],
 
             Self::Value(..) | Self::Identifier(..) => vec![],
@@ -176,7 +174,7 @@ impl ExpressionAST {
 
     pub fn new_scope(body: &[ExpressionAST]) -> Self {
         Self::Scope {
-            body: body.into_iter().cloned().map(Box::new).collect(),
+            body: body.iter().cloned().map(Box::new).collect(),
         }
     }
 }
@@ -383,8 +381,8 @@ pub mod type_system {
         fn get_type(&self, vars: &ExpressionScope) -> Option<Type> {
             Some(match &self {
                 Self::Value(..) | Self::BinaryOp { .. } => Type::U64,
-                Self::Identifier(name) => vars.get_ast(&name).unwrap().get_type(vars)?,
-                Self::Scope { body } if body.len() == 0 => Type::Void,
+                Self::Identifier(name) => vars.get_ast(name).unwrap().get_type(vars)?,
+                Self::Scope { body } if body.is_empty() => Type::Void,
                 Self::Scope { body } => {
                     vars.new_scope();
                     let res = body
@@ -396,11 +394,11 @@ pub mod type_system {
                     res
                 }
                 Self::Let { ident, value } => {
-                    vars.insert_ast(&ident, value);
+                    vars.insert_ast(ident, value);
                     Type::Void
                 }
                 Self::If {
-                    cond,
+                    cond: _,
                     true_block,
                     false_block,
                 } => {
@@ -425,8 +423,9 @@ pub mod type_system {
                     }
                 }
                 Self::FunctionCall { fn_name, .. } => {
-                    let fn_def = vars.get_ast(&fn_name).unwrap();
-                    let return_type = match fn_def.get_type(vars)? {
+                    let fn_def = vars.get_ast(fn_name).unwrap();
+
+                    match fn_def.get_type(vars)? {
                         Type::Fn(args) => args.into_iter().last().unwrap(),
                         _ => panic!(),
                     }
