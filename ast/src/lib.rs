@@ -1,8 +1,7 @@
-use ptree::{write_tree, Style, TreeItem};
+use ptree::{Style, TreeItem};
 use std::{
     borrow::Cow,
-    collections::{hash_map::DefaultHasher, HashMap},
-    hash::{BuildHasher, BuildHasherDefault, Hash, Hasher},
+    collections::HashMap,
     io::Write,
     sync::{Arc, Mutex},
 };
@@ -30,10 +29,16 @@ impl BinaryOp {
     }
 }
 
+pub type BoxedAST = Box<ExpressionAST>;
+
 #[derive(Clone, Debug, Hash)]
-pub enum ExpressionOperation {
+pub enum ExpressionAST {
     /// <cond> <true-result> <false-result>
-    If,
+    If {
+        cond: BoxedAST,
+        true_block: BoxedAST,
+        false_block: BoxedAST,
+    },
 
     /// <value>
     Value(u64),
@@ -42,33 +47,147 @@ pub enum ExpressionOperation {
     Identifier(String),
 
     /// <value> <value>
-    BinaryOp(BinaryOp),
+    BinaryOp {
+        op: BinaryOp,
+        lhs: BoxedAST,
+        rhs: BoxedAST,
+    },
 
     /// <expression>*
-    Scope,
+    Scope { body: Vec<BoxedAST> },
 
     /// let <identifier> = <value>
-    Let(String),
+    Let { ident: String, value: BoxedAST },
 
     /// <name>(<arguments>)
-    FunctionCall(String),
+    FunctionCall {
+        fn_name: String,
+        arguments: Vec<BoxedAST>,
+    },
 
     /// <expression>: type
-    TypedExpression { expr_type: type_system::Type },
+    TypedExpression {
+        expr_type: type_system::Type,
+        expr: BoxedAST,
+    },
 
     /// handle <expression> { <interpreters> }
     HandleExpression {
         interpreters: Vec<FnItem>,
-        expr: Box<ExpressionAST>,
+        expr: BoxedAST,
     },
 }
 
-impl ExpressionOperation {
+impl ExpressionAST {
     pub fn as_identifier(&self) -> Option<String> {
         match self {
             Self::Identifier(name) => Some(name.clone()),
             _ => None,
         }
+    }
+
+    pub fn evaluate(&self, vars: &ExpressionScope) -> Option<u64> {
+        match &self {
+            Self::Scope { body } => {
+                vars.new_scope();
+                let res = body
+                    .iter()
+                    .map(move |ast| ast.evaluate(&vars))
+                    .last()
+                    .and_then(|opt| opt);
+                vars.leave_scope();
+                res
+            }
+            Self::Let { ident, value } => {
+                let value = value.evaluate(&vars).unwrap();
+                vars.insert_value(&ident, value);
+                None
+            }
+            Self::Identifier(name) => Some(
+                vars.get_value(name)
+                    .expect(&format!("var {:?} to be known", &name)),
+            ),
+            Self::Value(v) => Some(*v),
+            Self::If {
+                cond,
+                true_block,
+                false_block,
+            } => match cond.evaluate(&vars) {
+                Some(v) if v > 0 => true_block.evaluate(&vars),
+                _ => false_block.evaluate(&vars),
+            },
+            Self::BinaryOp { op, lhs, rhs } => {
+                let lhs = lhs.evaluate(&vars).unwrap();
+                let rhs = rhs.evaluate(&vars).unwrap();
+                Some(op.perform(lhs, rhs))
+            }
+            Self::FunctionCall { fn_name, arguments } => {
+                let fn_item = vars
+                    .get_fn_item(&fn_name)
+                    .expect(&format!("function {} to exist", &fn_name));
+
+                let values = arguments.iter().collect::<Vec<_>>();
+                assert_eq!(fn_item.fn_sig.arguments.len(), values.len());
+
+                let mut body = vec![];
+
+                for ((name, _arg_type), value) in fn_item.fn_sig.arguments.iter().zip(values) {
+                    body.push(ExpressionAST::Let {
+                        ident: name.to_string(),
+                        value: value.clone(),
+                    });
+                }
+                //call_block.with_child(&ast.children[0]);
+
+                ExpressionAST::new_scope(&body).evaluate(&vars)
+            }
+            Self::TypedExpression { expr, .. } => expr.evaluate(&vars),
+            Self::HandleExpression { .. } => {
+                todo!()
+            }
+        }
+    }
+    pub fn traverse<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut ExpressionAST),
+    {
+        f(self)
+    }
+
+    pub fn get_children(&self) -> Vec<ExpressionAST> {
+        match self.clone() {
+            Self::If {
+                cond,
+                true_block,
+                false_block,
+            } => vec![*cond, *true_block, *false_block],
+            Self::Let { value, .. } => vec![*value],
+            Self::BinaryOp { lhs, rhs, .. } => vec![*lhs, *rhs],
+            Self::FunctionCall { arguments, .. } => {
+                arguments.into_iter().map(|arg| *arg.clone()).collect()
+            }
+            Self::HandleExpression { expr, .. } => vec![*expr],
+            Self::Scope { body } => body.into_iter().map(|ast| *ast.clone()).collect(),
+            Self::TypedExpression { expr, .. } => vec![*expr],
+
+            Self::Value(..) | Self::Identifier(..) => vec![],
+        }
+    }
+
+    pub fn new_scope(body: &[ExpressionAST]) -> Self {
+        Self::Scope {
+            body: body.into_iter().cloned().map(Box::new).collect(),
+        }
+    }
+}
+
+impl TreeItem for ExpressionAST {
+    type Child = Self;
+    fn write_self<W: Write>(&self, f: &mut W, style: &Style) -> std::io::Result<()> {
+        write!(f, "{}", style.paint(format!("{:?}", self)))
+    }
+    fn children(&self) -> Cow<'_, [Self::Child]> {
+        Cow::from(self.get_children())
     }
 }
 
@@ -110,10 +229,7 @@ impl ExpressionScope {
             .last()
             .unwrap()
             .vars
-            .insert(
-                name.to_string(),
-                ExpressionAST::new(ExpressionOperation::Value(value)),
-            );
+            .insert(name.to_string(), ExpressionAST::Value(value));
     }
 
     pub fn insert_ast(&self, name: &str, value: &ExpressionAST) {
@@ -160,159 +276,6 @@ impl ExpressionScope {
             }
         }
         None
-    }
-}
-
-#[derive(Clone, Hash)]
-pub struct ExpressionAST {
-    pub operation: ExpressionOperation,
-    pub children: Vec<ExpressionAST>,
-}
-
-impl TreeItem for ExpressionAST {
-    type Child = Self;
-    fn write_self<W: Write>(&self, f: &mut W, style: &Style) -> std::io::Result<()> {
-        write!(f, "{}", style.paint(format!("{:?}", self.operation)))
-    }
-    fn children(&self) -> Cow<'_, [Self::Child]> {
-        Cow::from(&self.children[..])
-    }
-}
-
-impl std::fmt::Debug for ExpressionAST {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut tree = Vec::new();
-        write_tree(self, &mut tree).unwrap();
-        f.write_str(std::str::from_utf8(&tree).unwrap())
-    }
-}
-
-impl ExpressionAST {
-    pub fn new(operation: ExpressionOperation) -> Self {
-        Self {
-            operation,
-            children: vec![],
-        }
-    }
-
-    pub fn with_child(&mut self, expression: &ExpressionAST) -> &mut Self {
-        self.children.push(expression.clone());
-        self
-    }
-
-    pub fn evaluate(&self, vars: &ExpressionScope) -> Option<u64> {
-        use ExpressionOperation::*;
-        match &self.operation {
-            Scope => {
-                vars.new_scope();
-                let res = self
-                    .children
-                    .iter()
-                    .map(move |ast| ast.evaluate(vars))
-                    .last()
-                    .and_then(|opt| opt);
-                vars.leave_scope();
-                res
-            }
-            Let(name) => {
-                if let [value] = &self.children[..] {
-                    let value = value.evaluate(vars).unwrap();
-                    vars.insert_value(name, value);
-                    None
-                } else {
-                    todo!()
-                }
-            }
-            Identifier(name) => Some(
-                vars.get_value(name)
-                    .unwrap_or_else(|| panic!("var {:?} to be known", &name)),
-            ),
-            Value(v) => Some(*v),
-            If => {
-                if let [cond, true_value, false_value] = &self.children[..] {
-                    match cond.evaluate(vars) {
-                        Some(v) if v > 0 => true_value.evaluate(vars),
-                        _ => false_value.evaluate(vars),
-                    }
-                } else {
-                    todo!()
-                }
-            }
-            BinaryOp(binary_op) => {
-                if let [arg_1, arg_2] = &self.children[..] {
-                    let arg_1 = arg_1.evaluate(vars).unwrap();
-                    let arg_2 = arg_2.evaluate(vars).unwrap();
-                    Some(binary_op.perform(arg_1, arg_2))
-                } else {
-                    todo!()
-                }
-            }
-            FunctionCall(name) => {
-                let fn_item = vars
-                    .get_fn_item(name)
-                    .unwrap_or_else(|| panic!("function {} to exist", &name));
-
-                let values = self.children.iter().collect::<Vec<_>>();
-                assert_eq!(fn_item.fn_sig.arguments.len(), values.len());
-
-                let mut call_block = ExpressionAST::new(Scope);
-
-                for ((name, _arg_type), value) in fn_item.fn_sig.arguments.iter().zip(values) {
-                    call_block
-                        .with_child(ExpressionAST::new(Let(name.to_string())).with_child(value));
-                }
-                //call_block.with_child(&ast.children[0]);
-
-                call_block.evaluate(vars)
-            }
-            TypedExpression { .. } => {
-                if let [body] = &self.children[..] {
-                    body.evaluate(vars)
-                } else {
-                    todo!()
-                }
-            }
-            HandleExpression { .. } => {
-                todo!()
-            }
-        }
-    }
-    pub fn traverse<F>(&mut self, f: F)
-    where
-        F: FnMut(&mut ExpressionAST),
-    {
-        Self::traverse_ast(self, Arc::new(Mutex::new(f)));
-    }
-
-    fn traverse_ast<F>(ast: &mut ExpressionAST, f: Arc<Mutex<F>>)
-    where
-        F: FnMut(&mut ExpressionAST),
-    {
-        let hasher = BuildHasherDefault::<DefaultHasher>::default();
-
-        let original_hash = {
-            let mut hasher = hasher.build_hasher();
-            ast.hash(&mut hasher);
-            hasher.finish()
-        };
-
-        (f.lock().unwrap())(ast);
-
-        let new_hash = {
-            let mut hasher = hasher.build_hasher();
-            ast.hash(&mut hasher);
-            hasher.finish()
-        };
-
-        if original_hash != new_hash {
-            println!("ast changed! {} to {}\n{:?}", original_hash, new_hash, &ast);
-            Self::traverse_ast(ast, f);
-            return;
-        }
-
-        for child in &mut ast.children {
-            Self::traverse_ast(child, f.clone());
-        }
     }
 }
 
@@ -418,15 +381,13 @@ pub mod type_system {
 
     impl TypeSystem for ExpressionAST {
         fn get_type(&self, vars: &ExpressionScope) -> Option<Type> {
-            use super::ExpressionOperation::*;
-            Some(match &self.operation {
-                Value(..) | BinaryOp(..) => Type::U64,
-                Identifier(name) => vars.get_ast(name).unwrap().get_type(vars)?,
-                Scope if self.children.is_empty() => Type::Void,
-                Scope => {
+            Some(match &self {
+                Self::Value(..) | Self::BinaryOp { .. } => Type::U64,
+                Self::Identifier(name) => vars.get_ast(&name).unwrap().get_type(vars)?,
+                Self::Scope { body } if body.len() == 0 => Type::Void,
+                Self::Scope { body } => {
                     vars.new_scope();
-                    let res = self
-                        .children
+                    let res = body
                         .iter()
                         .map(|expr| expr.get_type(vars))
                         .last()
@@ -434,45 +395,44 @@ pub mod type_system {
                     vars.leave_scope();
                     res
                 }
-                Let(name) => {
-                    let body = self.children.get(0).unwrap();
-                    vars.insert_ast(name, body);
+                Self::Let { ident, value } => {
+                    vars.insert_ast(&ident, value);
                     Type::Void
                 }
-                If => {
-                    if let [_cond, true_body, false_body] = &self.children[..] {
-                        let true_body_type = true_body.get_type(vars);
-                        let false_body_type = false_body.get_type(vars);
-                        let types = true_body_type
-                            .into_iter()
-                            .chain(false_body_type.into_iter())
-                            .collect::<Vec<_>>();
-                        match &types[..] {
-                            [true_body, false_body] => {
-                                if true_body == false_body {
-                                    true_body.clone()
-                                } else {
-                                    //TODO: convert to Result
-                                    return None;
-                                }
+                Self::If {
+                    cond,
+                    true_block,
+                    false_block,
+                } => {
+                    let true_block_type = true_block.get_type(vars);
+                    let false_block_type = false_block.get_type(vars);
+                    let types = true_block_type
+                        .into_iter()
+                        .chain(false_block_type.into_iter())
+                        .collect::<Vec<_>>();
+                    match &types[..] {
+                        [true_block, false_block] => {
+                            if true_block == false_block {
+                                true_block.clone()
+                            } else {
+                                //TODO: convert to Result
+                                return None;
                             }
-                            [body] => body.clone(),
-                            [] => return None,
-                            _ => unreachable!(),
                         }
-                    } else {
-                        todo!()
+                        [block] => block.clone(),
+                        [] => return None,
+                        _ => unreachable!(),
                     }
                 }
-                FunctionCall(name) => {
-                    let fn_def = vars.get_ast(name).unwrap();
-                    match fn_def.get_type(vars)? {
+                Self::FunctionCall { fn_name, .. } => {
+                    let fn_def = vars.get_ast(&fn_name).unwrap();
+                    let return_type = match fn_def.get_type(vars)? {
                         Type::Fn(args) => args.into_iter().last().unwrap(),
                         _ => panic!(),
                     }
                 }
-                TypedExpression { expr_type } => expr_type.clone(),
-                HandleExpression { .. } => todo!(),
+                Self::TypedExpression { expr_type, .. } => expr_type.clone(),
+                Self::HandleExpression { .. } => todo!(),
             })
         }
     }
