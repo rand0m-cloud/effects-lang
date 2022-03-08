@@ -183,7 +183,7 @@ impl std::fmt::Debug for ExpressionAST {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut tree = Vec::new();
         write_tree(self, &mut tree).unwrap();
-        f.write_str(&format!("{}", std::str::from_utf8(&tree).unwrap()))
+        f.write_str(std::str::from_utf8(&tree).unwrap())
     }
 }
 
@@ -208,7 +208,7 @@ impl ExpressionAST {
                 let res = self
                     .children
                     .iter()
-                    .map(move |ast| ast.evaluate(&vars))
+                    .map(move |ast| ast.evaluate(vars))
                     .last()
                     .and_then(|opt| opt);
                 vars.leave_scope();
@@ -216,8 +216,8 @@ impl ExpressionAST {
             }
             Let(name) => {
                 if let [value] = &self.children[..] {
-                    let value = value.evaluate(&vars).unwrap();
-                    vars.insert_value(&name, value);
+                    let value = value.evaluate(vars).unwrap();
+                    vars.insert_value(name, value);
                     None
                 } else {
                     todo!()
@@ -225,14 +225,14 @@ impl ExpressionAST {
             }
             Identifier(name) => Some(
                 vars.get_value(name)
-                    .expect(&format!("var {:?} to be known", &name)),
+                    .unwrap_or_else(|| panic!("var {:?} to be known", &name)),
             ),
             Value(v) => Some(*v),
             If => {
                 if let [cond, true_value, false_value] = &self.children[..] {
-                    match cond.evaluate(&vars) {
-                        Some(v) if v > 0 => true_value.evaluate(&vars),
-                        _ => false_value.evaluate(&vars),
+                    match cond.evaluate(vars) {
+                        Some(v) if v > 0 => true_value.evaluate(vars),
+                        _ => false_value.evaluate(vars),
                     }
                 } else {
                     todo!()
@@ -240,8 +240,8 @@ impl ExpressionAST {
             }
             BinaryOp(binary_op) => {
                 if let [arg_1, arg_2] = &self.children[..] {
-                    let arg_1 = arg_1.evaluate(&vars).unwrap();
-                    let arg_2 = arg_2.evaluate(&vars).unwrap();
+                    let arg_1 = arg_1.evaluate(vars).unwrap();
+                    let arg_2 = arg_2.evaluate(vars).unwrap();
                     Some(binary_op.perform(arg_1, arg_2))
                 } else {
                     todo!()
@@ -249,8 +249,8 @@ impl ExpressionAST {
             }
             FunctionCall(name) => {
                 let fn_item = vars
-                    .get_fn_item(&name)
-                    .expect(&format!("function {} to exist", &name));
+                    .get_fn_item(name)
+                    .unwrap_or_else(|| panic!("function {} to exist", &name));
 
                 let values = self.children.iter().collect::<Vec<_>>();
                 assert_eq!(fn_item.fn_sig.arguments.len(), values.len());
@@ -259,15 +259,15 @@ impl ExpressionAST {
 
                 for ((name, _arg_type), value) in fn_item.fn_sig.arguments.iter().zip(values) {
                     call_block
-                        .with_child(ExpressionAST::new(Let(name.to_string())).with_child(&value));
+                        .with_child(ExpressionAST::new(Let(name.to_string())).with_child(value));
                 }
                 //call_block.with_child(&ast.children[0]);
 
-                call_block.evaluate(&vars)
+                call_block.evaluate(vars)
             }
             TypedExpression { .. } => {
                 if let [body] = &self.children[..] {
-                    body.evaluate(&vars)
+                    body.evaluate(vars)
                 } else {
                     todo!()
                 }
@@ -306,7 +306,7 @@ impl ExpressionAST {
 
         if original_hash != new_hash {
             println!("ast changed! {} to {}\n{:?}", original_hash, new_hash, &ast);
-            Self::traverse_ast(ast, f.clone());
+            Self::traverse_ast(ast, f);
             return;
         }
 
@@ -421,8 +421,8 @@ pub mod type_system {
             use super::ExpressionOperation::*;
             Some(match &self.operation {
                 Value(..) | BinaryOp(..) => Type::U64,
-                Identifier(name) => vars.get_ast(&name).unwrap().get_type(vars)?,
-                Scope if self.children.len() == 0 => Type::Void,
+                Identifier(name) => vars.get_ast(name).unwrap().get_type(vars)?,
+                Scope if self.children.is_empty() => Type::Void,
                 Scope => {
                     vars.new_scope();
                     let res = self
@@ -436,7 +436,7 @@ pub mod type_system {
                 }
                 Let(name) => {
                     let body = self.children.get(0).unwrap();
-                    vars.insert_ast(&name, body);
+                    vars.insert_ast(name, body);
                     Type::Void
                 }
                 If => {
@@ -465,12 +465,11 @@ pub mod type_system {
                     }
                 }
                 FunctionCall(name) => {
-                    let fn_def = vars.get_ast(&name).unwrap();
-                    let return_type = match fn_def.get_type(vars)? {
+                    let fn_def = vars.get_ast(name).unwrap();
+                    match fn_def.get_type(vars)? {
                         Type::Fn(args) => args.into_iter().last().unwrap(),
                         _ => panic!(),
-                    };
-                    return_type
+                    }
                 }
                 TypedExpression { expr_type } => expr_type.clone(),
                 HandleExpression { .. } => todo!(),

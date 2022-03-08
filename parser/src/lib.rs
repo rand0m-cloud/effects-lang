@@ -133,7 +133,7 @@ fn tokenize(input: &str) -> IResult<&str, Token> {
             value(Token::OpenAngledBracket, tag("<")),
         )),
         map(digit1, |numbers: &str| {
-            Token::Value(u64::from_str_radix(numbers, 10).unwrap())
+            Token::Value(numbers.parse::<u64>().unwrap())
         }),
         map(
             recognize(pair(
@@ -159,7 +159,7 @@ impl std::fmt::Display for OwnedTokenStream {
 impl<'a> From<TokenStream<'a>> for OwnedTokenStream {
     fn from(tokens: TokenStream<'a>) -> Self {
         Self {
-            tokens: tokens.tokens.into_iter().cloned().collect(),
+            tokens: tokens.tokens.to_vec(),
         }
     }
 }
@@ -171,7 +171,7 @@ pub struct TokenStream<'a> {
 
 impl<'a> From<&'a [Token]> for TokenStream<'a> {
     fn from(tokens: &'a [Token]) -> Self {
-        Self { tokens: &tokens }
+        Self { tokens }
     }
 }
 
@@ -275,7 +275,7 @@ fn parse_scope(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> {
             let mut ast = ExpressionAST::new(ExpressionOperation::Scope);
             exprs
                 .iter()
-                .fold(&mut ast, |ast, expr| ast.with_child(&expr));
+                .fold(&mut ast, |ast, expr| ast.with_child(expr));
             ast
         },
     )(tokens)
@@ -285,7 +285,7 @@ fn parse_identifier(tokens: TokenStream) -> IResult<TokenStream, String> {
     map_opt(take(1usize), |tokens: TokenStream| {
         let expr = tokens.tokens[0].as_expr()?;
         match expr.operation {
-            ExpressionOperation::Identifier(name) => Some(name.clone()),
+            ExpressionOperation::Identifier(name) => Some(name),
             _ => None,
         }
     })(tokens)
@@ -356,7 +356,7 @@ fn parse_type(tokens: TokenStream) -> IResult<TokenStream, type_system::Type> {
                 Token::CloseParenthesis.parse(),
             ),
             |args| {
-                if args.len() > 0 {
+                if !args.is_empty() {
                     Type::Tuple(args)
                 } else {
                     Type::Void
