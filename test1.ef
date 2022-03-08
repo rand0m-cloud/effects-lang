@@ -1,0 +1,16 @@
+effect Typewriter {
+	fn write(chr: u64);
+}
+
+fn program(): Typewriter -> u64 {
+    Typewriter::write(1);
+    0
+}
+
+fn main() {
+	handle program() {
+		fn Typewriter::write(chr: u64) {
+			chr +2;
+		}
+        }
+}

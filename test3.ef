@@ -1,0 +1,34 @@
+extern fn _put_char(chr: u64): Stdio;
+
+effect TestEffect {}
+
+effect Stdio {
+	fn put_char(chr: u64);
+}
+fn put_char(chr: u64): Stdio {
+	Stdio::put_char(chr);
+}
+
+fn hello(): Stdio {
+	Stdio::put_char(104);
+	Stdio::put_char(101);
+	Stdio::put_char(108);
+	Stdio::put_char(108);
+	Stdio::put_char(111);
+	Stdio::put_char(10);
+}
+
+fn program(): Stdio {
+	hello()
+}
+
+fn main() {
+	handle program() {
+		fn Stdio::put_char(chr: u64) {
+			_put_char(chr);
+		}
+	}
+	if 1 { 0 } else { 5 }
+}
+
+
