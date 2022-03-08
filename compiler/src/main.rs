@@ -143,10 +143,7 @@ impl Compiler {
 
 fn main() {
     fn run() -> Result<(), CompilerError> {
-        let filename = std::env::args()
-            .skip(1)
-            .next()
-            .ok_or(CompilerError::MissingInput)?;
+        let filename = std::env::args().nth(1).ok_or(CompilerError::MissingInput)?;
         let contents = std::fs::read_to_string(filename)?;
         let compiler = Compiler::new(&contents)?;
 

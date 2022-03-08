@@ -13,7 +13,7 @@ pub fn validate_item(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), an
 pub enum SyntaxError {}
 
 //TODO
-fn validate_syntax(item: &ItemDecl) -> Result<(), SyntaxError> {
+fn validate_syntax(_item: &ItemDecl) -> Result<(), SyntaxError> {
     Ok(())
 }
 
@@ -26,7 +26,7 @@ pub enum TypeError {
     MissingEffects(Vec<String>),
 
     #[error("missing interpreter function {0}")]
-    MissingInterpreter(String),
+    _MissingInterpreter(String),
 
     #[error("unknown function {0}")]
     UnknownFunction(String),
@@ -87,7 +87,7 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                 FunctionSignature {
                     arguments,
                     effects,
-                    return_type,
+                    return_type: _,
                     ..
                 },
             body,
@@ -113,9 +113,9 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                                 panic!()
                             };
 
-                        let cond_ty = go(module, &cond, env)?;
-                        let tblock_ty = go(module, &tblock, env)?;
-                        let fblock_ty = go(module, &fblock, env)?;
+                        let cond_ty = go(module, cond, env)?;
+                        let tblock_ty = go(module, tblock, env)?;
+                        let fblock_ty = go(module, fblock, env)?;
 
                         if cond_ty != type_system::Type::U64 {
                             return Err(TypeError::TypeMismatch(type_system::Type::U64, cond_ty));
@@ -129,7 +129,7 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                     }
                     ExpressionOperation::TypedExpression { expr_type: ty } => {
                         let child = &ast.children[0];
-                        let expr_ty = go(module, &child, env)?;
+                        let expr_ty = go(module, child, env)?;
                         if ty != &expr_ty {
                             return Err(TypeError::TypeMismatch(ty.clone(), expr_ty));
                         }
@@ -146,17 +146,17 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                         let ast = env
                             .vars
                             .get_ast(name)
-                            .ok_or(TypeError::UnknownVariable(name.clone()))?;
+                            .ok_or_else(|| TypeError::UnknownVariable(name.clone()))?;
                         go(module, &ast, env)?
                     }
-                    ExpressionOperation::Scope if ast.children.len() == 0 => {
+                    ExpressionOperation::Scope if ast.children.is_empty() => {
                         type_system::Type::Void
                     }
                     ExpressionOperation::Scope => {
                         env.vars.new_scope();
                         let mut result = None;
                         for child in &ast.children {
-                            result = Some(go(module, &child, env)?);
+                            result = Some(go(module, child, env)?);
                         }
                         env.vars.leave_scope();
                         result.unwrap()
@@ -169,8 +169,8 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                             panic!();
                         };
 
-                        let left_ty = go(module, &left, env)?;
-                        let right_ty = go(module, &right, env)?;
+                        let left_ty = go(module, left, env)?;
+                        let right_ty = go(module, right, env)?;
                         if left_ty != type_system::Type::U64 {
                             return Err(TypeError::TypeMismatch(type_system::Type::U64, left_ty));
                         }
@@ -199,7 +199,7 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                             env.handled_effects.push(eff.clone());
                         }
 
-                        let expr_type = go(module, &expr, env)?;
+                        let expr_type = go(module, expr, env)?;
 
                         for _eff in &effects {
                             env.handled_effects.pop();
@@ -220,7 +220,7 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                                     Some(&fn_def.fn_sig)
                                 }
                             })
-                            .ok_or(TypeError::UnknownFunction(func_name.clone()))?;
+                            .ok_or_else(|| TypeError::UnknownFunction(func_name.clone()))?;
                         if fn_sig.arguments.len() != ast.children.len() {
                             return Err(TypeError::IncorrectNumberOfArguments(
                                 fn_sig.arguments.len(),
@@ -229,16 +229,12 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                         }
 
                         for child in &ast.children {
-                            go(module, &child, env)?;
+                            go(module, child, env)?;
                         }
 
                         for effect in &fn_sig.effects {
-                            if env
-                                .handled_effects
-                                .iter()
-                                .find(|eff| eff == &effect)
-                                .is_none()
-                                && env.used_effects.iter().find(|eff| eff == &effect).is_none()
+                            if env.handled_effects.iter().any(|eff| eff == effect)
+                                && env.used_effects.iter().any(|eff| eff == effect)
                             {
                                 env.used_effects.push(effect.clone());
                             }
@@ -254,8 +250,10 @@ fn typecheck(item: &ItemDecl, environment: &[ItemDecl]) -> Result<(), TypeError>
                 .add_items(environment)
                 .expect("adding items to module to not fail");
 
-            let mut env = Env::default();
-            env.function_arguments = arguments.iter().cloned().collect();
+            let mut env = Env {
+                function_arguments: arguments.iter().cloned().collect(),
+                ..Env::default()
+            };
             go(&module, body, &mut env)?;
 
             let used_effects = env.used_effects.iter().collect::<HashSet<_>>();

@@ -5,15 +5,15 @@ pub fn export_binary_op(op: &BinaryOp) -> String {
     match op {
         BinaryOp::Add => "+",
         BinaryOp::Subtract => "-",
-        x @ _ => todo!("{:?}", x),
+        x => todo!("{:?}", x),
     }
     .to_string()
 }
 
 pub fn export_to_rust(ir: &IR) -> String {
     let mut result = String::new();
-    let mut ir_iter = ir.as_ref().iter();
-    while let Some(op) = ir_iter.next() {
+    let ir_iter = ir.as_ref().iter();
+    for op in ir_iter {
         result += &match op {
             IROp::FunctionDefinition(name, argument_count, body) => {
                 let arguments = (0..*argument_count).map(|i| format!("arg{}: u64", i)).fold(

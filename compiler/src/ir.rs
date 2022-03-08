@@ -32,9 +32,7 @@ impl AsRef<[IROp]> for IR {
 
 impl IR {
     pub fn new(ops: &[IROp]) -> Self {
-        Self {
-            ops: ops.iter().cloned().collect(),
-        }
+        Self { ops: ops.to_vec() }
     }
 
     pub fn append(&mut self, ops: &[IROp]) {
@@ -56,7 +54,6 @@ pub enum CodegenError {
 pub fn build_ir(item: &FnItem, environment: &[ItemDecl]) -> Result<IR, CodegenError> {
     #[derive(Debug)]
     struct Env {
-        unique_number: u64,
         vars: ExpressionScope,
         items: HashMap<String, FnItem>,
         all_items: Vec<ItemDecl>,
@@ -79,7 +76,6 @@ pub fn build_ir(item: &FnItem, environment: &[ItemDecl]) -> Result<IR, CodegenEr
                     scope
                 });
             Self {
-                unique_number: 0,
                 vars,
                 items: environment
                     .iter()
@@ -87,13 +83,8 @@ pub fn build_ir(item: &FnItem, environment: &[ItemDecl]) -> Result<IR, CodegenEr
                     .map(|item| (item.fn_sig.name.clone(), item.clone()))
                     .collect::<HashMap<_, _>>(),
                 fn_args,
-                all_items: environment.iter().cloned().collect(),
+                all_items: environment.to_vec(),
             }
-        }
-        fn unique_number(&mut self) -> u64 {
-            let res = self.unique_number;
-            self.unique_number += 1;
-            res
         }
     }
     fn go(expression: &ExpressionAST, env: &mut Env) -> Result<IR, CodegenError> {
@@ -106,17 +97,17 @@ pub fn build_ir(item: &FnItem, environment: &[ItemDecl]) -> Result<IR, CodegenEr
                 } else {
                     go(
                         &env.vars
-                            .get_ast(&name)
-                            .ok_or(CodegenError::UnknownVariable(name.clone()))?,
+                            .get_ast(name)
+                            .ok_or_else(|| CodegenError::UnknownVariable(name.clone()))?,
                         env,
                     )?
                 }
             }
             If => {
                 if let [cond, true_body, false_body] = &expression.children[..] {
-                    let mut cond = go(&cond, env)?;
-                    let true_body = go(&true_body, env)?;
-                    let false_body = go(&false_body, env)?;
+                    let cond = go(cond, env)?;
+                    let true_body = go(true_body, env)?;
+                    let false_body = go(false_body, env)?;
                     IR::new(&[IROp::IfElseBlock {
                         cond,
                         tblock: true_body,
@@ -128,8 +119,8 @@ pub fn build_ir(item: &FnItem, environment: &[ItemDecl]) -> Result<IR, CodegenEr
             }
             BinaryOp(op) => {
                 if let [arg_1, arg_2] = &expression.children[..] {
-                    let arg_1 = go(&arg_1, env)?;
-                    let mut arg_2 = go(&arg_2, env)?;
+                    let arg_1 = go(arg_1, env)?;
+                    let mut arg_2 = go(arg_2, env)?;
                     arg_2.append(arg_1.as_ref());
                     arg_2.append(&[IROp::BinaryOp(*op)]);
                     arg_2
@@ -148,7 +139,7 @@ pub fn build_ir(item: &FnItem, environment: &[ItemDecl]) -> Result<IR, CodegenEr
             }
             Let(name) => {
                 if let [body] = &expression.children[..] {
-                    env.vars.insert_ast(&name, &body);
+                    env.vars.insert_ast(name, body);
                     go(body, env)?
                 } else {
                     todo!()
