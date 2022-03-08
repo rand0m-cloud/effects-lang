@@ -1,6 +1,6 @@
 use ast::{
-    type_system, BinaryOp, EffectDecl, ExpressionAST, ExpressionOperation, External, FnDecl,
-    FnItem, FunctionSignature, ItemDecl,
+    type_system, BinaryOp, EffectDecl, ExpressionAST, External, FnDecl, FnItem, FunctionSignature,
+    ItemDecl,
 };
 use nom::{
     branch::alt,
@@ -47,18 +47,28 @@ pub enum Token {
 }
 
 impl Token {
-    pub fn as_expr(&self) -> Option<ExpressionAST> {
-        let op = match self {
-            Self::Identifier(name) => ExpressionOperation::Identifier(name.into()),
-            Self::Value(value) => ExpressionOperation::Value(*value),
-            Self::Plus => ExpressionOperation::BinaryOp(BinaryOp::Add),
-            Self::Minus => ExpressionOperation::BinaryOp(BinaryOp::Subtract),
-
-            Self::OpenAngledBracket => ExpressionOperation::BinaryOp(BinaryOp::LessThan),
-            _ => return None,
-        };
-        Some(ExpressionAST::new(op))
+    pub fn as_identifier(&self) -> Option<&String> {
+        match self {
+            Self::Identifier(name) => Some(name),
+            _ => None,
+        }
     }
+
+    pub fn as_value(&self) -> Option<u64> {
+        match self {
+            Self::Value(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_binary_op(&self) -> Option<BinaryOp> {
+        Some(match self {
+            Self::Plus => BinaryOp::Add,
+            Self::Minus => BinaryOp::Subtract,
+            _ => return None,
+        })
+    }
+
     pub fn parse<'a, E: ParseError<TokenStream<'a>>>(
         self,
     ) -> impl FnMut(TokenStream<'a>) -> IResult<TokenStream<'a>, Token, E> {
@@ -271,33 +281,19 @@ fn parse_scope(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> {
             many0(parse_expression),
             Token::CloseBrace.parse(),
         ),
-        |exprs| {
-            let mut ast = ExpressionAST::new(ExpressionOperation::Scope);
-            exprs
-                .iter()
-                .fold(&mut ast, |ast, expr| ast.with_child(expr));
-            ast
-        },
+        |exprs| ExpressionAST::new_scope(&exprs),
     )(tokens)
 }
 
 fn parse_identifier(tokens: TokenStream) -> IResult<TokenStream, String> {
     map_opt(take(1usize), |tokens: TokenStream| {
-        let expr = tokens.tokens[0].as_expr()?;
-        match expr.operation {
-            ExpressionOperation::Identifier(name) => Some(name),
-            _ => None,
-        }
+        tokens.tokens[0].as_identifier().cloned()
     })(tokens)
 }
 
 fn parse_value(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> {
     map_opt(take(1usize), |tokens: TokenStream| {
-        let expr = tokens.tokens[0].as_expr()?;
-        match expr.operation {
-            ExpressionOperation::Value(_) => Some(expr),
-            _ => None,
-        }
+        Some(ExpressionAST::Value(tokens.tokens[0].as_value()?))
     })(tokens)
 }
 
@@ -309,10 +305,9 @@ fn parse_let(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> {
             Token::Equals.parse(),
             cut(parse_expression),
         )),
-        |(_, identifier, _, expr)| {
-            ExpressionAST::new(ExpressionOperation::Let(identifier))
-                .with_child(&expr)
-                .clone()
+        |(_, ident, _, value)| ExpressionAST::Let {
+            ident,
+            value: value.into(),
         },
     )(tokens)
 }
@@ -326,23 +321,17 @@ fn parse_if(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> {
             Token::Else.parse(),
             parse_scope,
         )),
-        |(_if, cond, true_block, _else, false_block)| {
-            ExpressionAST::new(ExpressionOperation::If)
-                .with_child(&cond)
-                .with_child(&true_block)
-                .with_child(&false_block)
-                .clone()
+        |(_if, cond, true_block, _else, false_block)| ExpressionAST::If {
+            cond: cond.into(),
+            true_block: true_block.into(),
+            false_block: false_block.into(),
         },
     )(tokens)
 }
 
-fn parse_binary_op(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> {
+fn parse_binary_op(tokens: TokenStream) -> IResult<TokenStream, BinaryOp> {
     map_opt(take(1usize), |tokens: TokenStream| {
-        let expr = tokens.tokens[0].as_expr()?;
-        match expr.operation {
-            ExpressionOperation::BinaryOp(_) => Some(expr),
-            _ => None,
-        }
+        tokens.tokens[0].as_binary_op()
     })(tokens)
 }
 
@@ -384,11 +373,9 @@ fn parse_handle_expression(tokens: TokenStream) -> IResult<TokenStream, Expressi
                 ),
             )),
         ),
-        |(expr, interpreters)| {
-            ExpressionAST::new(ExpressionOperation::HandleExpression {
-                interpreters,
-                expr: Box::new(expr),
-            })
+        |(expr, interpreters)| ExpressionAST::HandleExpression {
+            interpreters,
+            expr: Box::new(expr),
         },
     )(tokens)
 }
@@ -401,17 +388,24 @@ fn parse_expression(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> 
         parse_let,
         parse_value,
         map(parse_scope_resolution, |name| {
-            ExpressionAST::new(ExpressionOperation::Identifier(name))
+            ExpressionAST::Identifier(name)
         }),
     ))(tokens)?;
 
-    if let Ok((tokens, mut op)) = parse_binary_op(tokens.clone()) {
-        let (tokens, expr2) = parse_expression(tokens)?;
-        return Ok((tokens, op.with_child(&expr).with_child(&expr2).clone()));
+    if let Ok((tokens, op)) = parse_binary_op(tokens.clone()) {
+        let (tokens, rhs) = parse_expression(tokens)?;
+        return Ok((
+            tokens,
+            ExpressionAST::BinaryOp {
+                op,
+                lhs: expr.into(),
+                rhs: rhs.into(),
+            },
+        ));
     }
 
     // is function call?
-    let tokens = if let ExpressionOperation::Identifier(name) = &mut expr.operation {
+    let tokens = if let ExpressionAST::Identifier(fn_name) = &mut expr {
         let (tokens, res) = opt(delimited(
             Token::OpenParenthesis.parse(),
             many0(terminated(parse_expression, opt(Token::Comma.parse()))),
@@ -419,10 +413,10 @@ fn parse_expression(tokens: TokenStream) -> IResult<TokenStream, ExpressionAST> 
         ))(tokens)?;
 
         if let Some(arguments) = res {
-            expr = ExpressionAST::new(ExpressionOperation::FunctionCall(name.clone()));
-            for arg in arguments {
-                expr.with_child(&arg);
-            }
+            expr = ExpressionAST::FunctionCall {
+                fn_name: fn_name.clone(),
+                arguments: arguments.into_iter().map(Box::from).collect(),
+            };
         }
         tokens
     } else {
