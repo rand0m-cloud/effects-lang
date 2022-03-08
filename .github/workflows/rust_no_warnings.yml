@@ -12,7 +12,9 @@ jobs:
         with:
           profile: minimal
           toolchain: nightly-2022-02-22
-      - uses: actions-rs/cargo@v1
-        with:
-          command: rustc
-          args: -- -D warnings
+      - name: Run cargo rustc -- -D warnings on each crate
+          run: |
+             for dir in $(find . -maxdepth 1 -type d -not -name ".*" -not -name target); do (
+               cd $dir && cargo rustc -- -D warnings
+             ); done;
+          shell: bash
